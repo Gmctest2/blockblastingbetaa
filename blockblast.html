@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Blokkenbreker</title>
+<style>
+  :root{
+    --bg:#151022; --board:#1e1836; --cell:#2a2347; --cell-line:#382f5c;
+    --accent:#ffb443; --text:#f2eefc; --sub:#a79bd1;
+    color-scheme: dark;
+    padding-top: env(safe-area-inset-top,0px);
+    padding-bottom: env(safe-area-inset-bottom,0px);
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0; background:radial-gradient(circle at 50% -10%, #241c3f, var(--bg) 60%);
+    font-family: 'Segoe UI', system-ui, sans-serif; color:var(--text);
+    display:flex; flex-direction:column; align-items:center; gap:14px;
+    padding:20px 14px 30px; min-height:100%;
+    -webkit-tap-highlight-color: transparent; user-select:none;
+    overflow-x:hidden;
+  }
+  h1{
+    font-size:1.5rem; margin:4px 0 0; letter-spacing:.5px; font-weight:800;
+    background:linear-gradient(90deg,#ffb443,#ff6f91);
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+  }
+  .topbar{ display:flex; gap:14px; align-items:center; }
+  .stat{
+    background:var(--board); border:1px solid var(--cell-line); border-radius:14px;
+    padding:8px 16px; text-align:center; min-width:84px;
+  }
+  .stat .n{font-size:1.3rem; font-weight:800; color:var(--accent);}
+  .stat .l{font-size:.7rem; color:var(--sub); text-transform:uppercase; letter-spacing:.08em;}
+  #board{
+    display:grid; grid-template-columns:repeat(8,1fr); gap:4px;
+    background:var(--board); padding:8px; border-radius:16px;
+    width:min(92vw, 420px); aspect-ratio:1/1; box-shadow:0 20px 50px rgba(0,0,0,.4);
+    touch-action:none;
+  }
+  .cell{
+    background:var(--cell); border-radius:6px; position:relative;
+    transition: background .12s, transform .1s;
+  }
+  .cell.filled{ box-shadow: inset 0 -3px 0 rgba(0,0,0,.25), inset 0 3px 0 rgba(255,255,255,.15); }
+  .cell.preview-ok{ background:var(--accent); opacity:.55; }
+  .cell.preview-bad{ background:#ff5c6c; opacity:.5; }
+  .cell.clearing{ animation: pop .35s ease forwards; }
+  @keyframes pop{ 0%{transform:scale(1);} 60%{transform:scale(1.18); filter:brightness(1.6);} 100%{transform:scale(0); opacity:0;} }
+
+  #tray{
+    display:flex; gap:16px; justify-content:center; width:min(92vw,420px);
+    min-height:96px; align-items:center;
+  }
+  .piece-slot{
+    flex:1; display:flex; align-items:center; justify-content:center;
+    min-height:90px; border-radius:12px;
+  }
+  .piece{ display:grid; gap:3px; cursor:grab; touch-action:none; }
+  .piece .b{ border-radius:4px; box-shadow: inset 0 -2px 0 rgba(0,0,0,.25), inset 0 2px 0 rgba(255,255,255,.2); }
+  .piece.dragging{ position:fixed; z-index:50; pointer-events:none; opacity:.95; }
+  .piece.used{ visibility:hidden; }
+
+  #msg{ font-size:.85rem; color:var(--sub); min-height:1.2em; }
+  #overlay{
+    position:fixed; inset:0; background:rgba(10,7,20,.85); display:none;
+    align-items:center; justify-content:center; flex-direction:column; gap:14px; z-index:100;
+    padding: env(safe-area-inset-top,0px) 16px env(safe-area-inset-bottom,0px);
+  }
+  #overlay.show{ display:flex; }
+  #overlay h2{ font-size:1.6rem; margin:0; }
+  #overlay p{ color:var(--sub); margin:0; }
+  button{
+    background:linear-gradient(90deg,#ffb443,#ff6f91); border:none; color:#1a1330;
+    font-weight:800; padding:12px 26px; border-radius:999px; font-size:1rem; cursor:pointer;
+  }
+  .colors-0{background:#5ad1e6;} .colors-1{background:#ffb443;} .colors-2{background:#ff6f91;}
+  .colors-3{background:#8f7bff;} .colors-4{background:#5eec8a;} .colors-5{background:#ff9f5a;}
+</style>
+</head>
+<body>
+  <h1>Blokkenbreker</h1>
+  <div class="topbar">
+    <div class="stat"><div class="n" id="scoreEl">0</div><div class="l">Score</div></div>
+    <div class="stat"><div class="n" id="bestEl">0</div><div class="l">Beste</div></div>
+  </div>
+  <div id="board"></div>
+  <div id="tray"></div>
+  <div id="msg">Sleep een blok naar het bord om een rij of kolom vol te maken.</div>
+
+  <div id="overlay">
+    <h2>Spel voorbij</h2>
+    <p id="finalScore"></p>
+    <button id="retryBtn">Opnieuw spelen</button>
+  </div>
+
+<script>
+const SIZE = 8;
+const boardEl = document.getElementById('board');
+const trayEl = document.getElementById('tray');
+const scoreEl = document.getElementById('scoreEl');
+const bestEl = document.getElementById('bestEl');
+const msgEl = document.getElementById('msg');
+const overlay = document.getElementById('overlay');
+
+let grid = Array.from({length:SIZE}, ()=>Array(SIZE).fill(-1));
+let score = 0;
+let best = 0;
+try{ best = parseInt(localStorage.getItem('bb_best')||'0',10)||0; }catch(e){}
+bestEl.textContent = best;
+
+const SHAPES = [
+  [[1]],
+  [[1,1]], [[1],[1]],
+  [[1,1,1]], [[1],[1],[1]],
+  [[1,1,1,1]], [[1],[1],[1],[1]],
+  [[1,1],[1,1]],
+  [[1,1,0],[0,1,1]], [[0,1,1],[1,1,0]],
+  [[1,0],[1,0],[1,1]], [[0,1],[0,1],[1,1]], [[1,1],[1,0],[1,0]], [[1,1],[0,1],[0,1]],
+  [[1,1,1],[0,1,0]], [[0,1,0],[1,1,1]], [[1,0],[1,1],[1,0]], [[0,1],[1,1],[0,1]],
+  [[1,1,1],[1,0,0]], [[1,1,1],[0,0,1]], [[1,0,0],[1,1,1]], [[0,0,1],[1,1,1]],
+];
+
+let pieces = [];   // current tray pieces {shape,color,used}
+let cells = [];     // board cell DOM refs
+
+function buildBoard(){
+  boardEl.innerHTML = '';
+  cells = [];
+  for(let r=0;r<SIZE;r++){
+    cells.push([]);
+    for(let c=0;c<SIZE;c++){
+      const d = document.createElement('div');
+      d.className='cell';
+      d.dataset.r=r; d.dataset.c=c;
+      boardEl.appendChild(d);
+      cells[r].push(d);
+    }
+  }
+}
+
+function randShape(){
+  const s = SHAPES[Math.floor(Math.random()*SHAPES.length)];
+  const color = Math.floor(Math.random()*6);
+  return {shape:s, color, used:false};
+}
+
+function newTray(){
+  pieces = [randShape(), randShape(), randShape()];
+  renderTray();
+}
+
+function cellSize(){
+  return boardEl.clientWidth/SIZE - 4*(SIZE-1)/SIZE;
+}
+
+function renderTray(){
+  trayEl.innerHTML='';
+  pieces.forEach((p, idx)=>{
+    const slot = document.createElement('div');
+    slot.className='piece-slot';
+    if(!p.used){
+      const el = buildPieceEl(p, 22);
+      el.dataset.idx = idx;
+      attachDrag(el, p, idx);
+      slot.appendChild(el);
+    }
+    trayEl.appendChild(slot);
+  });
+  checkGameOver();
+}
+
+function buildPieceEl(p, unit){
+  const rows = p.shape.length, cols = p.shape[0].length;
+  const el = document.createElement('div');
+  el.className='piece';
+  el.style.gridTemplateColumns = `repeat(${cols}, ${unit}px)`;
+  el.style.gridTemplateRows = `repeat(${rows}, ${unit}px)`;
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      const b = document.createElement('div');
+      if(p.shape[r][c]){
+        b.className = 'b colors-'+p.color;
+      } else {
+        b.style.visibility='hidden';
+      }
+      el.appendChild(b);
+    }
+  }
+  return el;
+}
+
+function attachDrag(el, piece, idx){
+  el.addEventListener('pointerdown', (e)=>{
+    e.preventDefault();
+    startDrag(e, el, piece, idx);
+  });
+}
+
+function startDrag(e, sourceEl, piece, idx){
+  const rows=piece.shape.length, cols=piece.shape[0].length;
+  const unit = Math.max(24, cellSize());
+  const ghost = buildPieceEl(piece, unit);
+  ghost.classList.add('dragging');
+  document.body.appendChild(ghost);
+  sourceEl.style.visibility='hidden';
+
+  const boardRect = ()=>boardEl.getBoundingClientRect();
+  const gap = 4;
+
+  function place(clientX, clientY){
+    const w = unit*cols, h = unit*rows;
+    ghost.style.left = (clientX - w/2) + 'px';
+    ghost.style.top = (clientY - h*0.85) + 'px';
+  }
+  place(e.clientX, e.clientY);
+
+  function clearPreview(){
+    for(let r=0;r<SIZE;r++) for(let c=0;c<SIZE;c++){
+      cells[r][c].classList.remove('preview-ok','preview-bad');
+    }
+  }
+
+  function targetCell(clientX, clientY){
+    const br = boardRect();
+    const cellW = (br.width - 16)/SIZE + gap;
+    const anchorX = clientX - w2().w/2;
+    const anchorY = clientY - w2().h*0.85;
+    const localX = anchorX - br.left - 8;
+    const localY = anchorY - br.top - 8;
+    const c = Math.round(localX/cellW);
+    const r = Math.round(localY/cellW);
+    return {r,c};
+  }
+  function w2(){ return {w:unit*cols, h:unit*rows}; }
+
+  function canPlace(r,c){
+    if(r<0||c<0) return false;
+    for(let dr=0; dr<rows; dr++) for(let dc=0; dc<cols; dc++){
+      if(!piece.shape[dr][dc]) continue;
+      const rr=r+dr, cc=c+dc;
+      if(rr<0||rr>=SIZE||cc<0||cc>=SIZE) return false;
+      if(grid[rr][cc]!==-1) return false;
+    }
+    return true;
+  }
+
+  function onMove(ev){
+    place(ev.clientX, ev.clientY);
+    clearPreview();
+    const {r,c} = targetCell(ev.clientX, ev.clientY);
+    const ok = canPlace(r,c);
+    for(let dr=0; dr<rows; dr++) for(let dc=0; dc<cols; dc++){
+      if(!piece.shape[dr][dc]) continue;
+      const rr=r+dr, cc=c+dc;
+      if(rr>=0&&rr<SIZE&&cc>=0&&cc<SIZE){
+        cells[rr][cc].classList.add(ok?'preview-ok':'preview-bad');
+      }
+    }
+  }
+
+  function onUp(ev){
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onUp);
+    clearPreview();
+    ghost.remove();
+    const {r,c} = targetCell(ev.clientX, ev.clientY);
+    if(canPlace(r,c)){
+      commitPlace(piece, r, c);
+      piece.used = true;
+      sourceEl.remove();
+      renderTray();
+      if(pieces.every(p=>p.used)) newTray();
+    } else {
+      sourceEl.style.visibility='visible';
+    }
+  }
+
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup', onUp);
+}
+
+function commitPlace(piece, r, c){
+  const rows=piece.shape.length, cols=piece.shape[0].length;
+  let placed=0;
+  for(let dr=0; dr<rows; dr++) for(let dc=0; dc<cols; dc++){
+    if(!piece.shape[dr][dc]) continue;
+    grid[r+dr][c+dc] = piece.color;
+    cells[r+dr][c+dc].className = 'cell filled colors-'+piece.color;
+    placed++;
+  }
+  score += placed;
+  updateScore();
+  resolveClears();
+}
+
+function resolveClears(){
+  const fullRows=[], fullCols=[];
+  for(let r=0;r<SIZE;r++){ if(grid[r].every(v=>v!==-1)) fullRows.push(r); }
+  for(let c=0;c<SIZE;c++){ if(grid.every(row=>row[c]!==-1)) fullCols.push(c); }
+  if(fullRows.length===0 && fullCols.length===0) return;
+
+  const toClear = new Set();
+  fullRows.forEach(r=>{ for(let c=0;c<SIZE;c++) toClear.add(r+'_'+c); });
+  fullCols.forEach(c=>{ for(let r=0;r<SIZE;r++) toClear.add(r+'_'+c); });
+
+  toClear.forEach(key=>{
+    const [r,c] = key.split('_').map(Number);
+    cells[r][c].classList.add('clearing');
+  });
+
+  const lines = fullRows.length+fullCols.length;
+  score += toClear.size + lines*10;
+  updateScore();
+  msgEl.textContent = lines>1 ? `Combo! ${lines} lijnen tegelijk.` : 'Lijn opgeruimd!';
+
+  setTimeout(()=>{
+    toClear.forEach(key=>{
+      const [r,c] = key.split('_').map(Number);
+      grid[r][c] = -1;
+      cells[r][c].className='cell';
+    });
+  }, 320);
+}
+
+function updateScore(){
+  scoreEl.textContent = score;
+  if(score>best){ best=score; bestEl.textContent=best; try{localStorage.setItem('bb_best', String(best));}catch(e){} }
+}
+
+function canPieceFitAnywhere(piece){
+  const rows=piece.shape.length, cols=piece.shape[0].length;
+  for(let r=0;r<=SIZE-rows;r++){
+    for(let c=0;c<=SIZE-cols;c++){
+      let ok=true;
+      for(let dr=0;dr<rows && ok;dr++) for(let dc=0;dc<cols;dc++){
+        if(piece.shape[dr][dc] && grid[r+dr][c+dc]!==-1){ ok=false; break; }
+      }
+      if(ok) return true;
+    }
+  }
+  return false;
+}
+
+function checkGameOver(){
+  const remaining = pieces.filter(p=>!p.used);
+  if(remaining.length===0) return;
+  const stuck = remaining.every(p=>!canPieceFitAnywhere(p));
+  if(stuck){
+    setTimeout(()=>{
+      document.getElementById('finalScore').textContent = `Je score: ${score}`;
+      overlay.classList.add('show');
+    }, 250);
+  }
+}
+
+document.getElementById('retryBtn').addEventListener('click', ()=>{
+  grid = Array.from({length:SIZE}, ()=>Array(SIZE).fill(-1));
+  score=0; updateScore();
+  buildBoard();
+  newTray();
+  overlay.classList.remove('show');
+  msgEl.textContent = 'Sleep een blok naar het bord om een rij of kolom vol te maken.';
+});
+
+buildBoard();
+newTray();
+updateScore();
+</script>
+</body>
+</html>
